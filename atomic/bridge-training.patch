@@ -1,0 +1,211 @@
+diff --git a/src/megatron/bridge/data/energon/task_encoder_utils.py b/src/megatron/bridge/data/energon/task_encoder_utils.py
+index d24dc6df7..f3ed2b32f 100644
+--- a/src/megatron/bridge/data/energon/task_encoder_utils.py
++++ b/src/megatron/bridge/data/energon/task_encoder_utils.py
+@@ -310,58 +310,59 @@ def cook_chatml_sample(conversation) -> List[Dict]:
+     """Normalize a ChatML conversation to ``[{"role": ..., "content": ...}, ...]``.
+ 
+     Accepts both ``from``/``value`` (GPT-style) and ``role``/``content``
+-    (OpenAI-style) formats, with an optional leading system turn when the
+-    total number of turns is odd.
++    (OpenAI-style) formats. An optional leading system turn and tool results
++    between assistant turns are supported.
+ 
+     Args:
+         conversation: A JSON string, bytes, list of turn dicts, or a dict
+             with a ``"conversations"`` key.
+ 
+     Returns:
+-        A list of dicts with ``role`` in ``{"system", "user", "assistant"}``
+-        and ``content`` as a plain string.
++        A list of dicts with ``role`` in
++        ``{"system", "user", "assistant", "tool"}`` and ``content`` as a
++        plain string.
+     """
+     if isinstance(conversation, (str, bytes)):
+         conversation = json.loads(conversation)
+ 
+     conversation = conversation if not isinstance(conversation, dict) else conversation.get("conversations", [])
+-
+-    _from_system_ = "from" in conversation[0]
+-    role_key = "from" if _from_system_ else "role"
+-    content_key = "value" if _from_system_ else "content"
++    if not conversation:
++        raise ValueError("ChatML conversation must contain at least one turn.")
++
++    from_value_format = "from" in conversation[0]
++    role_key = "from" if from_value_format else "role"
++    content_key = "value" if from_value_format else "content"
++    role_aliases = {
++        "human": "user",
++        "gpt": "assistant",
++        "observation": "tool",
++    }
++    allowed_roles = {"system", "user", "assistant", "tool"}
+ 
+     converted: List[Dict] = []
+-
+-    # Handle optional system turn (odd number of messages)
+-    if len(conversation) % 2 != 0:
+-        converted.append({"role": "system", "content": conversation[0][content_key]})
+-        conversation = conversation[1:]
+-
+-    if _from_system_:
+-        EXPECTED_ROLE = ["human", "gpt"]
+-        for turn_idx, turn in enumerate(conversation):
+-            role = turn[role_key]
+-            if role != EXPECTED_ROLE[turn_idx % len(EXPECTED_ROLE)]:
+-                logging.warning(
+-                    f"Expect conversation organized in order: [sys] human gpt human gpt...,"
+-                    f"but got role '{role}' in turn {turn_idx}"
+-                )
+-            content = turn[content_key]
+-            if role == "human":
+-                role = "user"
+-            elif role == "gpt":
+-                role = "assistant"
+-            converted.append({"role": role, "content": content})
+-    else:
+-        EXPECTED_ROLE = ["user", "assistant"]
+-        for turn_idx, turn in enumerate(conversation):
+-            role = turn[role_key]
+-            if role != EXPECTED_ROLE[turn_idx % len(EXPECTED_ROLE)]:
+-                logging.warning(
+-                    f"Expect conversation organized in order: [sys] user assistant user assistant...,"
+-                    f" but got role '{role}' in turn {turn_idx}"
+-                )
+-            content = turn[content_key]
+-            converted.append({"role": role, "content": content})
++    for turn_idx, turn in enumerate(conversation):
++        role = role_aliases.get(turn[role_key], turn[role_key])
++        if role not in allowed_roles:
++            raise ValueError(f"Unsupported ChatML role '{role}' in turn {turn_idx}.")
++
++        previous_role = converted[-1]["role"] if converted else None
++        if previous_role is None:
++            expected_roles = {"system", "user"}
++        elif previous_role == "system":
++            expected_roles = {"user"}
++        elif previous_role in {"user", "tool"}:
++            expected_roles = {"assistant"}
++        else:
++            expected_roles = {"user", "tool"}
++
++        if role not in expected_roles:
++            logging.warning(
++                "Expected one of roles %s after %s, but got role '%s' in turn %d",
++                sorted(expected_roles),
++                previous_role or "conversation start",
++                role,
++                turn_idx,
++            )
++        converted.append({"role": role, "content": turn[content_key]})
+ 
+     return converted
+diff --git a/src/megatron/bridge/models/qwen_vl/modelling_qwen3_vl/model.py b/src/megatron/bridge/models/qwen_vl/modelling_qwen3_vl/model.py
+index 5787500e8..e761c8ffa 100644
+--- a/src/megatron/bridge/models/qwen_vl/modelling_qwen3_vl/model.py
++++ b/src/megatron/bridge/models/qwen_vl/modelling_qwen3_vl/model.py
+@@ -502,6 +502,8 @@ class Qwen3VLModel(MegatronModule):
+                 combined_embeddings = combined_embeddings.transpose(0, 1).contiguous()
+ 
+             if combined_embeddings is not None and cp_size > 1 and packed_seq_params is None:
++                # Keep MTP token IDs aligned with the CP-local language-model activations.
++                lm_input_ids = split_data_cp_rank(lm_input_ids, cp_size, 1, cp_rank)
+                 combined_embeddings = split_data_cp_rank(combined_embeddings, cp_size, 0, cp_rank)
+             if packed_seq_params is not None:
+                 if attention_mask is None:
+diff --git a/src/megatron/bridge/recipes/qwen_vl/data/energon/task_encoder.py b/src/megatron/bridge/recipes/qwen_vl/data/energon/task_encoder.py
+index c7ff1aef3..4d869b458 100644
+--- a/src/megatron/bridge/recipes/qwen_vl/data/energon/task_encoder.py
++++ b/src/megatron/bridge/recipes/qwen_vl/data/energon/task_encoder.py
+@@ -40,6 +40,52 @@ from megatron.bridge.data.energon.task_encoder_utils import (
+ from megatron.bridge.training.utils.visual_inputs import Qwen2_5_VLVisualInputs
+ 
+ 
++CHATML_ASSISTANT_START = "<|im_start|>assistant\n"
++CHATML_ASSISTANT_END = "<|im_end|>"
++
++
++def _build_chatml_assistant_target(input_ids, conversation, tokenizer, pad_token_id):
++    """Build an unshifted target covering complete ChatML assistant turns.
++
++    Tokens supplied by the inference generation prompt remain masked. Every
++    token after the assistant role marker through ``<|im_end|>`` is included,
++    including template-generated thinking boundaries that are not present in
++    the raw assistant content.
++    """
++    assistant_turns = sum(turn["role"] == "assistant" for turn in conversation)
++    if assistant_turns == 0:
++        return None
++
++    start_tokens = tokenizer.encode(CHATML_ASSISTANT_START, add_special_tokens=False)
++    end_tokens = tokenizer.encode(CHATML_ASSISTANT_END, add_special_tokens=False)
++    if not start_tokens or not end_tokens:
++        return None
++
++    target = np.full(input_ids.shape, pad_token_id, dtype=input_ids.dtype)
++    search_start = 0
++    matched_turns = 0
++    while True:
++        _, content_start = find_pattern_indices(input_ids, start_tokens, search_start)
++        if content_start < 0:
++            break
++
++        end_start, turn_end = find_pattern_indices(input_ids, end_tokens, content_start)
++        if end_start < 0:
++            raise ValueError("ChatML assistant start marker has no matching <|im_end|> marker.")
++
++        target[content_start:turn_end] = input_ids[content_start:turn_end]
++        matched_turns += 1
++        search_start = turn_end
++
++    if matched_turns == 0:
++        return None
++    if matched_turns != assistant_turns:
++        raise ValueError(
++            f"Matched {matched_turns} ChatML assistant spans for {assistant_turns} assistant conversation turns."
++        )
++    return target
++
++
+ def process_vision(
+     processor, images, videos, fps=None, model_version: str = "qwen-vl", min_pixels=None, max_pixels=None
+ ):
+@@ -277,21 +323,25 @@ class QwenVLTaskEncoder(DefaultTaskEncoder[ChatMLSample, QwenVLTaskSample, QwenV
+                 text_content = [c for c in content if c.get("type") == "text"]
+                 turn["content"] = media_content + text_content
+ 
+-        # NOTE: we need to mask all system/user input tokens and assistant generation prefix tokens
++        # Mask system/user/tool input and the assistant role marker while
++        # supervising each complete generated assistant continuation, including
++        # template-generated think boundaries and <|im_end|>.
+         # In transformers >= 5.0, apply_chat_template returns BatchEncoding when tokenize=True
+         chat_output = self.hf_tokenizer.apply_chat_template(conversation, tokenize=True, return_tensors="np")
+         input_ids = chat_output["input_ids"][0] if isinstance(chat_output, BatchEncoding) else chat_output[0]
+         pad_token_id = self.hf_tokenizer.pad_token_id
+-        target = [pad_token_id for _ in range(len(input_ids))]
+-        search_start_index = 0
+-        for turn_idx, turn in enumerate(conversation[1:]):
+-            if turn["role"] == "assistant":
+-                answer = turn["content"]
+-                answer_tokens = self.hf_tokenizer.encode(answer, add_special_tokens=False)
+-                answer_start, answer_end = find_pattern_indices(input_ids, answer_tokens, search_start_index)
+-                assert answer_start > 0, "Not found valid answer in conversation."
+-                target[answer_start:answer_end] = input_ids[answer_start:answer_end]
+-                search_start_index = answer_end
++        target = _build_chatml_assistant_target(input_ids, conversation, self.hf_tokenizer, pad_token_id)
++        if target is None:
++            logging.warning("ChatML assistant boundaries were not found; falling back to assistant content matching.")
++            target = np.full(input_ids.shape, pad_token_id, dtype=input_ids.dtype)
++            search_start_index = 0
++            for turn in conversation[1:]:
++                if turn["role"] == "assistant":
++                    answer_tokens = self.hf_tokenizer.encode(turn["content"], add_special_tokens=False)
++                    answer_start, answer_end = find_pattern_indices(input_ids, answer_tokens, search_start_index)
++                    assert answer_start > 0, "Not found valid answer in conversation."
++                    target[answer_start:answer_end] = input_ids[answer_start:answer_end]
++                    search_start_index = answer_end
+ 
+         # NOTE: expand image_pad & video_pad
+         merge_length = self.merge_size**2

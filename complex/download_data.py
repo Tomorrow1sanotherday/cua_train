@@ -27,7 +27,7 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def verify(variant: str, root: Path) -> None:
+def verify(variant: str, root: Path, image_root: Path | None = None) -> None:
     if variant == "atomic":
         expected = ATOMIC_SHA256
         paths = {lane: root / f"train.3x.{lane}.jsonl" for lane in expected}
@@ -43,18 +43,28 @@ def verify(variant: str, root: Path) -> None:
             raise ValueError(f"SHA256 mismatch: {path}")
         if not path.with_suffix(".jsonl.idx").is_file():
             raise FileNotFoundError(f"missing Energon index: {path}.idx")
-    if variant == "complex" and not (root / "sft_gui_sharegpt/images_cursor_crosspage").is_dir():
+    images = image_root or (root / "sft_gui_sharegpt" if variant == "complex" else root)
+    if variant == "complex" and not (images / "images_cursor_crosspage").is_dir():
         raise FileNotFoundError("complex image tree is missing")
-    if variant == "atomic" and not (root / "images_cursor_regen_20260901").is_dir():
+    if variant == "atomic" and not (images / "images_cursor_regen_20260901").is_dir():
         raise FileNotFoundError("atomic image tree is missing")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("variant", choices=("atomic", "complex"))
-    parser.add_argument("--dest", type=Path, required=True)
+    parser.add_argument("--dest", type=Path)
+    parser.add_argument("--local-root", type=Path)
+    parser.add_argument("--image-root", type=Path)
     parser.add_argument("--revision", default="main")
     args = parser.parse_args()
+    if args.local_root is not None:
+        root = args.local_root.resolve()
+        verify(args.variant, root, args.image_root)
+        print(root)
+        return
+    if args.dest is None:
+        parser.error("--dest is required when --local-root is not set")
     commit = HfApi().repo_info(REPO_ID, repo_type="dataset", revision=args.revision).sha
     target = f"{PREFIX}/{args.variant}"
     snapshot_download(
@@ -65,7 +75,7 @@ def main() -> None:
         allow_patterns=[f"{target}/*", f"{target}/**"],
     )
     root = args.dest / target
-    verify(args.variant, root)
+    verify(args.variant, root, args.image_root)
     print(f"revision={commit}")
     print(root.resolve())
 

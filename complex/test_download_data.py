@@ -15,7 +15,8 @@ class ComplexDataVerificationTest(unittest.TestCase):
             root = Path(tmp)
             data = root / "action_window_current"
             data.mkdir()
-            (root / "sft_gui_sharegpt/images_cursor_crosspage").mkdir(parents=True)
+            image_root = root / "separate-images"
+            (image_root / "images_cursor_crosspage").mkdir(parents=True)
             lanes = {}
             for lane in ("func", "gui"):
                 payload = f'{{"lane":"{lane}"}}\n'.encode()
@@ -27,10 +28,10 @@ class ComplexDataVerificationTest(unittest.TestCase):
                 json.dumps({"format": "slides01_action_window_padded_v4", "lanes": lanes}),
                 encoding="utf-8",
             )
-            download_data.verify("complex", root)
+            download_data.verify("complex", root, image_root)
             (data / "train.action_window.func.jsonl").write_text("changed\n")
             with self.assertRaisesRegex(ValueError, "SHA256 mismatch"):
-                download_data.verify("complex", root)
+                download_data.verify("complex", root, image_root)
 
 
 if __name__ == "__main__":

@@ -1,42 +1,41 @@
-# Atomic (3x-full)
+# Atomic: 3x-full
 
-This is the 2026-09-07 one-epoch SFT recipe. Function and GUI are separate
-53,917/53,918-trajectory datasets. The release keeps the original JSONL,
-Energon byte-offset indexes, and image-relative paths. The image root is the
-downloaded `atomic/` directory.
+This directory contains its own setup, launcher, data adapter, downloaders,
+training entry, and tests. It does not need `complex/` or repository-root
+Python code.
 
-## Starting checkpoint
+## Inputs and commands
 
-`INIT_CKPT` must point to a Megatron-format checkpoint imported from the
-untrained Qwen3.5-VL-4B base model. The included
-[`import_qwen35_vlm_checkpoint.py`](import_qwen35_vlm_checkpoint.py)
-can produce it from a local HF-format model directory; run that import with
-one GPU before using `train.sh`. `MODEL_DIR` points to the same model's local
-HF configuration, tokenizer, and processor files. The download script, CUA
-adapter, and dependency file are also in this directory. It does not import
-code from `complex/` or the repository root.
-
-## Train
+- `INIT_CKPT`: required Megatron-format checkpoint imported from
+  Qwen3.5-4B base. The optional `import_qwen35_vlm_checkpoint.py` converts
+  local HF-format weights into Megatron format.
+- `WORK_DIR`: required writable directory for downloads and outputs.
+- `DATA_ROOT`: optional directory holding both `train.3x.{func,gui}.jsonl`,
+  their `.jsonl.idx` files, and images. Without it, download from
+  `Furunhao/cua` and verify the JSONL hashes.
+- `MODEL_DIR`: optional HF-format Qwen3.5-4B directory. Without it, download
+  public `Qwen/Qwen3.5-4B` for configuration and processor files.
 
 ```bash
-export BRIDGE_DIR=/path/to/Megatron-Bridge
-export MODEL_DIR=/path/to/Qwen3.5-4B
 export INIT_CKPT=/path/to/base-megatron-checkpoint
-export WORK_DIR=/path/to/cua-output
-bash atomic/train.sh func
-bash atomic/train.sh gui
+export WORK_DIR=/path/to/output
+export DATA_ROOT=/path/to/atomic-data  # optional
+bash run.sh func check
+bash run.sh func smoke
+bash run.sh func train
 ```
 
-The launcher downloads the `atomic/` data from `Furunhao/cua` into
-`${DATA_CACHE:-$WORK_DIR/data}`, validates both JSONL SHA256 values, then runs
-422 optimizer updates on eight GPUs. Global batch is 128, context parallelism
-is 2 for Function and 4 for GUI, sequence length is 32,768, image processing
-uses 200,704 pixels, and checkpoints are saved at iterations 211 and 422.
+If JSONL and images live under separate roots, set `IMAGE_ROOT` to the
+directory containing `images_cursor_*`. The HF release already puts them
+under one atomic root.
 
-Use separate `WORK_DIR` outputs for repeated runs. GUI and Function each
-start from the base checkpoint and must not initialize from each other.
+Function and GUI train independently from base weights. Each uses 422
+optimizer updates, global batch 128, sequence length 32,768, and save points
+211 and 422. Function uses context parallelism 2; GUI uses 4 and an extra
+rolling recovery checkpoint every 25 steps. `smoke` changes only the number
+of updates and disables saving.
 
-To use only this directory, copy `atomic/` to a Linux training machine,
-install `requirements.txt` in a compatible Megatron-Bridge environment, set
-the four variables above, and run `bash train.sh func` or `bash train.sh gui`
-from inside the directory. The model and Megatron-Bridge are external inputs.
+The host requires an NVIDIA driver, CUDA toolkit with `nvcc`, eight GPUs,
+Git, compiler tools, and Python 3 with `venv` and pip. `run.sh` calls `setup.sh` to
+install the remaining runtime in `.runtime/`, then runs `train.sh` directly
+on the host. It does not require Docker.

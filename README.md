@@ -1,68 +1,54 @@
 # CUA Training
 
-This repository contains two independent Qwen3.5-VL-4B SFT releases. Each
-directory has its own launcher, data downloader, CUA adapter, checkpoint
-importer, dependency file, tests, and README. Neither imports files from the
-other directory.
+Two independent training releases are provided. `atomic/` reproduces the
+3x-full Function/GUI SFT; `complex/` trains the latest Slides01 action-window
+Function/GUI SFT. Each directory can be copied and run by itself. Neither
+requires Docker or imports code from the other directory.
 
-| Version | Data | Supervision | Starting weights |
-| --- | --- | --- | --- |
-| [`atomic/`](atomic/README.md) | 3x-full, 53,917 Function or 53,918 GUI trajectories | Original full assistant turns | Qwen3.5-VL-4B base |
-| [`complex/`](complex/README.md) | Slides01 v4, 47,163 Function or 206,406 GUI actions per epoch | Final action and EOS only | Matching atomic `iter_0000422` |
+The datasets are public in `Furunhao/cua` at
+`dataset/cua-training-data/{atomic,complex}`. Model weights and Megatron
+checkpoints are not included in this GitHub repository.
 
-Data lives in the public Hugging Face dataset `Furunhao/cua` under
-`dataset/cua-training-data/{atomic,complex}`. Each launcher downloads its own
-release, verifies the training JSONL SHA256, and points the image loader at
-the downloaded image tree. The original image paths inside JSONL are kept.
+## New Linux server
 
-## Environment
-
-- Eight NVIDIA A100 80 GB or equivalent GPUs for the recorded configuration.
-- NVIDIA PyTorch container `nvcr.io/nvidia/pytorch:25.04-py3` or a compatible
-  environment with PyTorch, CUDA, Megatron-Bridge, Megatron-LM, Energon,
-  Transformers, Pillow, and `huggingface_hub`.
-- The recorded Bridge revision was `5cb3444c43f7499cf3872b2d46870cf8bc2e00ce`.
-  The CUA adapter used for training is included in each version directory.
-- Local Qwen3.5-VL-4B model files and a Megatron-format initialization
-  checkpoint. See each version's README for the required starting point.
-- Enough local disk for the downloaded data, model, and checkpoints. Dataset
-  files are downloaded before training; workers do not stream images from HF.
-
-Install the selected version's `requirements.txt` in a compatible training
-environment, then set `BRIDGE_DIR`, `MODEL_DIR`, `INIT_CKPT`, and `WORK_DIR`.
-The launchers use the same Function/GUI configuration values as the recorded
-runs. They do not automatically upload checkpoints.
-
-## Data download
+The host needs eight compatible NVIDIA GPUs (the recorded runs used 80 GB
+A100/A800 cards), a working NVIDIA driver, a CUDA development toolkit with
+`nvcc`, Git, a C++ compiler, `make`, Python 3 with `venv` and pip, and enough free disk.
+The scripts install their own Python 3.12 environment and training libraries.
+They do not use a container. CUDA 12.8 is recommended to match PyTorch 2.10's
+CUDA 12.8 build; other toolkit versions need local validation.
 
 ```bash
-python atomic/download_data.py atomic --dest /data/cua-hf --revision main
-python complex/download_data.py complex --dest /data/cua-hf --revision main
-```
-
-The script resolves `main` to an immutable commit before downloading and
-prints the resulting local data root. For a repeatable run, pass that commit
-as `--revision` or set `DATA_REVISION` when launching training.
-
-## Run
-
-```bash
-export BRIDGE_DIR=/path/to/Megatron-Bridge
-export MODEL_DIR=/path/to/Qwen3.5-4B
-export WORK_DIR=/path/to/cua-output
+git clone https://github.com/Tomorrow1sanotherday/cua_train.git
+cd cua_train
 export INIT_CKPT=/path/to/base-megatron-checkpoint
-bash atomic/train.sh func
-
-export INIT_CKPT=/path/to/atomic-func-iter_0000422
-bash complex/train.sh func
+export WORK_DIR=/path/to/output
+export DATA_ROOT=/path/to/atomic-data  # optional; omit to download from HF
+bash atomic/run.sh func check
+bash atomic/run.sh func smoke
+bash atomic/run.sh func train
 ```
 
-Run GUI separately with its own initialization checkpoint. The two lanes are
-independent; GUI must not continue from the Function checkpoint. Both scripts
-run a single eight-GPU node with `torch.distributed.run` and write to distinct
-output directories.
+For complex, set `INIT_CKPT` to the **matching atomic lane's** final
+`iter_0000422`, optionally set `DATA_ROOT` to the local complex release, and
+run `bash complex/run.sh func check|smoke|train`. Substitute `gui` for the
+independent GUI route.
 
-You can also copy just `atomic/` or just `complex/` to another project and
-run `bash train.sh func|gui` from that directory. Megatron-Bridge and model
-weights are external dependencies, so this repository alone does not contain
-a full GPU runtime. No GPU training was run as part of preparing this release.
+`setup.sh`, called by `run.sh`, creates `.runtime/`, downloads the pinned
+Megatron-Bridge commit and its Megatron-LM submodule, applies the training
+patch, installs PyTorch/Transformers/Energon, and builds Transformer Engine
+and the needed Apex fused weight-gradient extension against that PyTorch.
+This first compilation can take several minutes. A successful setup writes
+`.runtime/.ready`; later runs reuse it.
+
+`check` validates imports, data hashes, sample image decoding, model
+processor, checkpoint directory, and GPU count without updating parameters.
+`smoke` does one real optimizer update without saving a checkpoint. `train`
+uses the recorded update count and save schedule. The launchers download
+`Qwen/Qwen3.5-4B` when `MODEL_DIR` is absent; this provides config, tokenizer,
+processor, and model files, but does **not** replace `INIT_CKPT`. For a
+repeatable download, pin `DATA_REVISION` and `MODEL_REVISION` to HF commits.
+
+The original dataset JSONL and images were verified on HF. The native-host
+package still requires a completed smoke on a machine with a suitable CUDA
+development toolkit before its end-to-end behavior can be called verified.

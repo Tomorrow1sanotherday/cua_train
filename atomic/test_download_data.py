@@ -12,7 +12,8 @@ class AtomicDataVerificationTest(unittest.TestCase):
     def test_both_lanes_require_matching_jsonl_and_indexes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            (root / "images_cursor_regen_20260901").mkdir()
+            image_root = root / "separate-images"
+            (image_root / "images_cursor_regen_20260901").mkdir(parents=True)
             expected = {}
             for lane in ("func", "gui"):
                 payload = f'{{"lane":"{lane}"}}\n'.encode()
@@ -23,10 +24,10 @@ class AtomicDataVerificationTest(unittest.TestCase):
             previous = download_data.ATOMIC_SHA256
             download_data.ATOMIC_SHA256 = expected
             try:
-                download_data.verify("atomic", root)
+                download_data.verify("atomic", root, image_root)
                 (root / "train.3x.gui.jsonl.idx").unlink()
                 with self.assertRaises(FileNotFoundError):
-                    download_data.verify("atomic", root)
+                    download_data.verify("atomic", root, image_root)
             finally:
                 download_data.ATOMIC_SHA256 = previous
 

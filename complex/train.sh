@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-LANE=${1:?usage: bash complex/train.sh func|gui}
+LANE=${1:?usage: bash train.sh func|gui [check|smoke|train]}
+MODE=${2:-train}
+case "$MODE" in check|smoke|train) ;; *) echo "mode must be check, smoke, or train" >&2; exit 2 ;; esac
 case "$LANE" in
   func) GBS=64; STEPS=737; TOTAL=2211; PORT=29961; FUSER=0 ;;
   gui) GBS=32; STEPS=6451; TOTAL=19353; PORT=29962; FUSER=1 ;;
@@ -9,31 +11,55 @@ case "$LANE" in
 esac
 
 : "${BRIDGE_DIR:?set BRIDGE_DIR to Megatron-Bridge}"
-: "${MODEL_DIR:?set MODEL_DIR to local Qwen3.5-VL-4B HF files}"
 : "${INIT_CKPT:?set INIT_CKPT to matching atomic iter_0000422}"
 : "${WORK_DIR:?set WORK_DIR to output root}"
 PYTHON=${PYTHON:-python}
 VERSION_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 DATA_CACHE=${DATA_CACHE:-$WORK_DIR/data}
 DATA_REVISION=${DATA_REVISION:-main}
-DATA_ROOT=$DATA_CACHE/dataset/cua-training-data/complex
+MODEL_REVISION=${MODEL_REVISION:-main}
+MODEL_DIR=${MODEL_DIR:-$WORK_DIR/models/Qwen3.5-4B}
+if [[ -n "${DATA_ROOT:-}" ]]; then LOCAL_DATA=1; else LOCAL_DATA=0; fi
+DATA_ROOT=${DATA_ROOT:-$DATA_CACHE/dataset/cua-training-data/complex}
 ACTION=$DATA_ROOT/action_window_current/train.action_window.$LANE.jsonl
-IMAGE_ROOT=$DATA_ROOT/sft_gui_sharegpt
+IMAGE_ROOT=${IMAGE_ROOT:-$DATA_ROOT/sft_gui_sharegpt}
 SAVE=$WORK_DIR/complex/$LANE/checkpoints
 TB=$WORK_DIR/complex/$LANE/tensorboard
+DECAY_ITERS=$TOTAL
+SAVE_INTERVAL=$STEPS
+if [[ "$MODE" == smoke ]]; then
+  TOTAL=1
+  DECAY_ITERS=1
+  SAVE=null
+  SAVE_INTERVAL=0
+fi
 
-[[ -d "$BRIDGE_DIR" && -d "$MODEL_DIR" && -d "$INIT_CKPT" ]] || {
-  echo "Bridge, model, or initialization checkpoint directory is missing" >&2; exit 3;
+[[ -d "$BRIDGE_DIR" && -d "$INIT_CKPT" ]] || {
+  echo "Bridge or initialization checkpoint directory is missing" >&2; exit 3;
 }
-mkdir -p "$SAVE" "$TB"
-"$PYTHON" "$VERSION_DIR/download_data.py" complex \
-  --dest "$DATA_CACHE" --revision "$DATA_REVISION"
+mkdir -p "$TB"
+if [[ "$MODE" == train ]]; then mkdir -p "$SAVE"; fi
+if [[ "$LOCAL_DATA" == 1 ]]; then
+  "$PYTHON" "$VERSION_DIR/download_data.py" complex \
+    --local-root "$DATA_ROOT" --image-root "$IMAGE_ROOT"
+else
+  "$PYTHON" "$VERSION_DIR/download_data.py" complex \
+    --dest "$DATA_CACHE" --revision "$DATA_REVISION"
+fi
+if [[ ! -f "$MODEL_DIR/config.json" ]]; then
+  "$PYTHON" "$VERSION_DIR/download_model.py" \
+    --dest "$MODEL_DIR" --revision "$MODEL_REVISION"
+fi
 
 export CUA_IMAGE_ROOT="$IMAGE_ROOT"
 export CUA_DISABLE_JIT_FUSER_EARLY="$FUSER"
 export PYTHONPATH="$VERSION_DIR:$BRIDGE_DIR/src:$BRIDGE_DIR/3rdparty/Megatron-LM:${PYTHONPATH:-}"
 export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 TOKENIZERS_PARALLELISM=false
 export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}
+"$PYTHON" "$VERSION_DIR/runtime_check.py" \
+  --data-root "$DATA_ROOT" --image-root "$IMAGE_ROOT" --model-dir "$MODEL_DIR" \
+  --checkpoint "$INIT_CKPT" --lane "$LANE"
+if [[ "$MODE" == check ]]; then exit 0; fi
 
 cd "$BRIDGE_DIR"
 "$PYTHON" -m torch.distributed.run --nproc_per_node=8 \
@@ -53,10 +79,10 @@ cd "$BRIDGE_DIR"
   optimizer.optimizer_cpu_offload=false \
   scheduler.start_weight_decay=0.033 scheduler.end_weight_decay=0.033 \
   scheduler.weight_decay_incr_style=constant scheduler.lr_warmup_iters=0 \
-  "scheduler.lr_decay_iters=$TOTAL" scheduler.lr_decay_style=cosine \
+  "scheduler.lr_decay_iters=$DECAY_ITERS" scheduler.lr_decay_style=cosine \
   "checkpoint.pretrained_checkpoint=$INIT_CKPT" checkpoint.load=null \
   checkpoint.finetune=true checkpoint.load_optim=false checkpoint.load_rng=false \
-  "checkpoint.save=$SAVE" "checkpoint.save_interval=$STEPS" \
+  "checkpoint.save=$SAVE" "checkpoint.save_interval=$SAVE_INTERVAL" \
   checkpoint.save_optim=true checkpoint.save_rng=true checkpoint.async_save=false \
   checkpoint.non_persistent_save_interval=null \
   checkpoint.non_persistent_ckpt_type=null \
