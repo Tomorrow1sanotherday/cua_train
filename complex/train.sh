@@ -13,7 +13,7 @@ esac
 : "${INIT_CKPT:?set INIT_CKPT to matching atomic iter_0000422}"
 : "${WORK_DIR:?set WORK_DIR to output root}"
 PYTHON=${PYTHON:-python}
-REPO_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+VERSION_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 DATA_CACHE=${DATA_CACHE:-$WORK_DIR/data}
 DATA_REVISION=${DATA_REVISION:-main}
 DATA_ROOT=$DATA_CACHE/dataset/cua-training-data/complex
@@ -26,19 +26,19 @@ TB=$WORK_DIR/complex/$LANE/tensorboard
   echo "Bridge, model, or initialization checkpoint directory is missing" >&2; exit 3;
 }
 mkdir -p "$SAVE" "$TB"
-"$PYTHON" "$REPO_ROOT/shared/download_data.py" complex \
+"$PYTHON" "$VERSION_DIR/download_data.py" complex \
   --dest "$DATA_CACHE" --revision "$DATA_REVISION"
 
 export CUA_IMAGE_ROOT="$IMAGE_ROOT"
 export CUA_DISABLE_JIT_FUSER_EARLY="$FUSER"
-export PYTHONPATH="$REPO_ROOT/complex:$REPO_ROOT/shared:$BRIDGE_DIR/src:$BRIDGE_DIR/3rdparty/Megatron-LM:${PYTHONPATH:-}"
+export PYTHONPATH="$VERSION_DIR:$BRIDGE_DIR/src:$BRIDGE_DIR/3rdparty/Megatron-LM:${PYTHONPATH:-}"
 export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 TOKENIZERS_PARALLELISM=false
 export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}
 
 cd "$BRIDGE_DIR"
 "$PYTHON" -m torch.distributed.run --nproc_per_node=8 \
   --master_addr=127.0.0.1 --master_port="$PORT" \
-  "$REPO_ROOT/complex/run_slides01_sft.py" \
+  "$VERSION_DIR/run_slides01_sft.py" \
   --sample-mode action_window --hf-path "$MODEL_DIR" \
   --seq-length 32768 --micro-batch-size 1 --global-batch-size "$GBS" \
   "dataset.path=$ACTION" dataset.seq_length=32768 dataset.num_workers=1 \

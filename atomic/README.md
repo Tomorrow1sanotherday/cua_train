@@ -9,10 +9,12 @@ downloaded `atomic/` directory.
 
 `INIT_CKPT` must point to a Megatron-format checkpoint imported from the
 untrained Qwen3.5-VL-4B base model. The included
-[`import_qwen35_vlm_checkpoint.py`](../shared/import_qwen35_vlm_checkpoint.py)
+[`import_qwen35_vlm_checkpoint.py`](import_qwen35_vlm_checkpoint.py)
 can produce it from a local HF-format model directory; run that import with
 one GPU before using `train.sh`. `MODEL_DIR` points to the same model's local
-HF configuration, tokenizer, and processor files.
+HF configuration, tokenizer, and processor files. The download script, CUA
+adapter, and dependency file are also in this directory. It does not import
+code from `complex/` or the repository root.
 
 ## Train
 
@@ -33,3 +35,8 @@ uses 200,704 pixels, and checkpoints are saved at iterations 211 and 422.
 
 Use separate `WORK_DIR` outputs for repeated runs. GUI and Function each
 start from the base checkpoint and must not initialize from each other.
+
+To use only this directory, copy `atomic/` to a Linux training machine,
+install `requirements.txt` in a compatible Megatron-Bridge environment, set
+the four variables above, and run `bash train.sh func` or `bash train.sh gui`
+from inside the directory. The model and Megatron-Bridge are external inputs.

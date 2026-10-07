@@ -20,6 +20,11 @@ HF export into Megatron format, then reset optimizer, scheduler, RNG, and
 training step. This release contains training data and code; it does not
 include model weights.
 
+The downloader, CUA adapter, and optional checkpoint importer are included
+here. This directory does not import code from `atomic/` or the repository
+root. To prepare `INIT_CKPT` from an atomic HF export, run this directory's
+`import_qwen35_vlm_checkpoint.py` in the compatible Megatron-Bridge environment.
+
 ## Train
 
 ```bash
@@ -40,3 +45,8 @@ Function uses global batch 64 and 737 updates/epoch; GUI uses global batch
 1920x1080 source images, and one full checkpoint per epoch.
 
 Train Probe rows remain in the training set. There is no validation split.
+
+To use only this directory, copy `complex/` to a Linux training machine,
+install `requirements.txt` in a compatible Megatron-Bridge environment,
+provide the matching atomic final checkpoint as `INIT_CKPT`, and run
+`bash train.sh func` or `bash train.sh gui` from inside the directory.

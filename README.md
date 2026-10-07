@@ -1,6 +1,9 @@
 # CUA Training
 
-Two Qwen3.5-VL-4B SFT recipes are preserved here:
+This repository contains two independent Qwen3.5-VL-4B SFT releases. Each
+directory has its own launcher, data downloader, CUA adapter, checkpoint
+importer, dependency file, tests, and README. Neither imports files from the
+other directory.
 
 | Version | Data | Supervision | Starting weights |
 | --- | --- | --- | --- |
@@ -9,8 +12,8 @@ Two Qwen3.5-VL-4B SFT recipes are preserved here:
 
 Data lives in the public Hugging Face dataset `Furunhao/cua` under
 `dataset/cua-training-data/{atomic,complex}`. Each launcher downloads its own
-data release, verifies the training JSONL SHA256, and points the image loader
-at the downloaded image tree. The original image paths inside JSONL are kept.
+release, verifies the training JSONL SHA256, and points the image loader at
+the downloaded image tree. The original image paths inside JSONL are kept.
 
 ## Environment
 
@@ -19,22 +22,22 @@ at the downloaded image tree. The original image paths inside JSONL are kept.
   environment with PyTorch, CUDA, Megatron-Bridge, Megatron-LM, Energon,
   Transformers, Pillow, and `huggingface_hub`.
 - The recorded Bridge revision was `5cb3444c43f7499cf3872b2d46870cf8bc2e00ce`.
-  The run also used local CUA adapter code included in this repository.
+  The CUA adapter used for training is included in each version directory.
 - Local Qwen3.5-VL-4B model files and a Megatron-format initialization
   checkpoint. See each version's README for the required starting point.
 - Enough local disk for the downloaded data, model, and checkpoints. Dataset
   files are downloaded before training; workers do not stream images from HF.
 
-Install `huggingface_hub>=1.24,<3` in the training environment, then set
-`BRIDGE_DIR`, `MODEL_DIR`, `INIT_CKPT`, and `WORK_DIR`. The launchers use the
-same Function/GUI configuration values as the recorded runs. They do not
-automatically upload checkpoints.
+Install the selected version's `requirements.txt` in a compatible training
+environment, then set `BRIDGE_DIR`, `MODEL_DIR`, `INIT_CKPT`, and `WORK_DIR`.
+The launchers use the same Function/GUI configuration values as the recorded
+runs. They do not automatically upload checkpoints.
 
 ## Data download
 
 ```bash
-python shared/download_data.py atomic --dest /data/cua-hf --revision main
-python shared/download_data.py complex --dest /data/cua-hf --revision main
+python atomic/download_data.py atomic --dest /data/cua-hf --revision main
+python complex/download_data.py complex --dest /data/cua-hf --revision main
 ```
 
 The script resolves `main` to an immutable commit before downloading and
@@ -59,6 +62,7 @@ independent; GUI must not continue from the Function checkpoint. Both scripts
 run a single eight-GPU node with `torch.distributed.run` and write to distinct
 output directories.
 
-The commands reproduce the data and model configuration of the recorded runs.
-They require the stated hardware and dependencies; no GPU training was run as
-part of preparing this release.
+You can also copy just `atomic/` or just `complex/` to another project and
+run `bash train.sh func|gui` from that directory. Megatron-Bridge and model
+weights are external dependencies, so this repository alone does not contain
+a full GPU runtime. No GPU training was run as part of preparing this release.
